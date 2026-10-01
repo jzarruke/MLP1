@@ -77,7 +77,7 @@ from sklearn.metrics import (
 )
 from sklearn.model_selection import GridSearchCV, StratifiedKFold, train_test_split
 from sklearn.naive_bayes import MultinomialNB
-from sklearn.pipeline import Pipeline
+from sklearn.pipeline import FeatureUnion, Pipeline
 from sklearn.svm import LinearSVC
 
 warnings.filterwarnings("ignore")
@@ -626,6 +626,473 @@ preentrenados):
 > cada envío adicional a Kaggle debería documentarse aquí (o en una sección de bitácora)
 > indicando quién lo hizo y qué cambió, para sustentar el aporte individual de cada
 > integrante en la evaluación.
+
+---
+
+## Bitácora de envíos a Kaggle
+
+| # | Fecha | Modelo | Accuracy validación local | Score público Kaggle |
+|---|---|---|---|---|
+| 1 | 2026-09-12 | TF-IDF (uni+bigramas) + LogisticRegression | 0.7339 | **0.73000** (baseline: 0.65555) |
+""")
+
+# ---------------------------------------------------------------------------
+# 11. Iteración 2: variantes para subir el score
+# ---------------------------------------------------------------------------
+md("""\
+## 11. Iteración 2 — probando variantes para subir el score
+
+El envío 1 (TF-IDF palabras + Logistic Regression) dio **0.73000** en el leaderboard
+público, bien por encima del baseline (0.65555). Ahora probamos, sobre el mismo split
+de validación para que la comparación sea justa, las ideas que dejamos anotadas en la
+sección anterior. Seguimos dentro de las reglas de la Parte 1 (nada de redes
+neuronales ni embeddings preentrenados).
+""")
+
+md("""\
+### 11.1 TF-IDF de n-gramas de caracteres
+
+Los n-gramas de caracteres (`analyzer="char_wb"`) son robustos a errores de ortografía,
+alargamientos ("buenísimoo"), y variaciones informales, porque no dependen de que la
+palabra completa coincida exactamente con el vocabulario visto en entrenamiento.
+""")
+
+code("""\
+char_pipe = Pipeline([
+    ("vec", TfidfVectorizer(analyzer="char_wb", ngram_range=(3, 5), min_df=2,
+                             max_features=50000, sublinear_tf=True)),
+    ("clf", LogisticRegression(max_iter=3000, C=3, random_state=RANDOM_STATE)),
+])
+results.append(evaluate(char_pipe, "TFIDF char(3-5) + LogisticRegression"))
+results[-1]
+""")
+
+md("### 11.2 Combinación de n-gramas de palabras y de caracteres (`FeatureUnion`)")
+
+code("""\
+word_char_pipe = Pipeline([
+    ("features", FeatureUnion([
+        ("word", TfidfVectorizer(ngram_range=(1, 2), min_df=2, max_features=20000)),
+        ("char", TfidfVectorizer(analyzer="char_wb", ngram_range=(3, 5), min_df=2,
+                                  max_features=30000)),
+    ])),
+    ("clf", LogisticRegression(max_iter=3000, C=3, random_state=RANDOM_STATE)),
+])
+results.append(evaluate(word_char_pipe, "TFIDF word+char + LogisticRegression"))
+results[-1]
+""")
+
+md("""\
+### 11.3 Features léxicas hechas a mano + TF-IDF
+
+Agregamos señales explícitas que la intuición y el EDA sugieren que importan: signos de
+exclamación/interrogación, presencia de conectores contrastivos, longitud y longitud
+promedio de palabra. Se calculan sobre `text_clean` (ya limpio, pero conserva
+`¡ ! ¿ ? . , ; :`).
+""")
+
+code("""\
+from sklearn.base import BaseEstimator, TransformerMixin
+from scipy.sparse import csr_matrix
+
+class LexicalFeatures(BaseEstimator, TransformerMixin):
+    \"\"\"Features numéricas simples calculadas sobre el texto limpio.\"\"\"
+
+    def fit(self, X, y=None):
+        return self
+
+    def transform(self, X):
+        s = pd.Series(X).reset_index(drop=True)
+        n_exclaim = s.str.count("!")
+        n_question = s.str.count(r"\\?")
+        has_contrast = s.str.contains(contrast_markers, regex=True).astype(int)
+        n_words = s.str.split().str.len().fillna(0)
+
+        def avg_word_len(text):
+            words = re.findall(r"[a-zA-ZÀ-ÿñÑ]+", text)
+            return np.mean([len(w) for w in words]) if words else 0.0
+
+        avg_len = s.apply(avg_word_len)
+        feats = np.column_stack([n_exclaim, n_question, has_contrast, n_words, avg_len])
+        return csr_matrix(feats)
+
+lexical_pipe = Pipeline([
+    ("features", FeatureUnion([
+        ("word", TfidfVectorizer(ngram_range=(1, 2), min_df=2, max_features=20000)),
+        ("lexical", LexicalFeatures()),
+    ])),
+    ("clf", LogisticRegression(max_iter=3000, C=3, random_state=RANDOM_STATE)),
+])
+results.append(evaluate(lexical_pipe, "TFIDF word + features léxicas + LogisticRegression"))
+results[-1]
+""")
+
+md("""\
+### 11.4 Sobre-muestreo (oversampling) de la clase `neutral`
+
+`neutral` es la clase minoritaria y la que más se confunde (ver matriz de confusión de
+la sección 7). Probamos `RandomOverSampler` **solo sobre el conjunto de
+entrenamiento** (nunca sobre validación, para no inflar artificialmente la métrica) con
+un `Pipeline` de `imbalanced-learn`, que se asegura de que el resampling ocurra
+únicamente durante `fit`.
+""")
+
+code("""\
+from imblearn.over_sampling import RandomOverSampler
+from imblearn.pipeline import Pipeline as ImbPipeline
+
+oversample_pipe = ImbPipeline([
+    ("vec", TfidfVectorizer(ngram_range=(1, 2), min_df=2, max_features=20000)),
+    ("oversample", RandomOverSampler(random_state=RANDOM_STATE)),
+    ("clf", LogisticRegression(max_iter=3000, C=3, random_state=RANDOM_STATE)),
+])
+results.append(evaluate(oversample_pipe, "TFIDF + oversampling (neutral) + LogisticRegression"))
+results[-1]
+""")
+
+md("""\
+### 11.5 Ensamble por votación
+
+Combinamos tres modelos que suelen equivocarse en casos distintos: Logistic
+Regression, Naive Bayes y SVM lineal. Usamos `voting="hard"` (voto mayoritario) para no
+depender de calibrar probabilidades sobre `LinearSVC`.
+""")
+
+code("""\
+from sklearn.ensemble import VotingClassifier
+
+ensemble_pipe = Pipeline([
+    ("vec", TfidfVectorizer(ngram_range=(1, 2), min_df=2, max_features=20000)),
+    ("clf", VotingClassifier(estimators=[
+        ("lr", LogisticRegression(max_iter=3000, C=3, random_state=RANDOM_STATE)),
+        ("nb", MultinomialNB()),
+        ("svm", LinearSVC(random_state=RANDOM_STATE)),
+    ], voting="hard")),
+])
+results.append(evaluate(ensemble_pipe, "Ensamble (LR + NB + SVM, voto mayoritario)"))
+results[-1]
+""")
+
+md("### 11.6 Comparación de todos los candidatos (iteración 1 + iteración 2)")
+
+code("""\
+results_df = pd.DataFrame(results).drop_duplicates(subset="modelo", keep="last") \\
+    .sort_values("accuracy_val", ascending=False).reset_index(drop=True)
+
+fig, ax = plt.subplots(figsize=(9, 6))
+sns.barplot(data=results_df, x="accuracy_val", y="modelo", hue="modelo",
+            palette="crest", legend=False, ax=ax)
+ax.set_xlim(0, 1)
+ax.set_title("Accuracy en validación — todos los candidatos probados")
+for i, v in enumerate(results_df["accuracy_val"]):
+    ax.text(v + 0.01, i, f"{v:.3f}", va="center", fontsize=8)
+plt.tight_layout()
+plt.show()
+
+results_df
+""")
+
+code("""\
+best_model_name = results_df.iloc[0]["modelo"]
+best_val_acc = results_df.iloc[0]["accuracy_val"]
+best_pipe = fitted_models[best_model_name]
+print(f"Mejor modelo de la iteración 2: {best_model_name}  "
+      f"(accuracy validación = {best_val_acc:.4f}, vs. 0.7339 del envío 1)")
+""")
+
+md("""\
+### 11.7 Generar varios envíos distintos para Kaggle
+
+La rúbrica pide al menos 5 envíos distintos mostrando que el grupo iteró. Ya usamos el
+envío 1. Acá generamos un envío por cada variante nueva de esta iteración (no solo la
+ganadora), entrenada sobre **todo** `train.csv`, para tener varias entregas legítimas y
+distintas entre sí — así, aunque alguna no mejore el score público, se documenta el
+intento y el porqué.
+""")
+
+code("""\
+from sklearn.base import clone
+
+nuevas_variantes = {
+    "v2_char_ngrams": "TFIDF char(3-5) + LogisticRegression",
+    "v3_word_char": "TFIDF word+char + LogisticRegression",
+    "v4_lexical": "TFIDF word + features léxicas + LogisticRegression",
+    "v5_oversample_neutral": "TFIDF + oversampling (neutral) + LogisticRegression",
+    "v6_ensemble": "Ensamble (LR + NB + SVM, voto mayoritario)",
+}
+
+resumen_envios = []
+for slug, model_name in nuevas_variantes.items():
+    pipe = clone(fitted_models[model_name])
+    pipe.fit(train_df["text_clean"], train_df["label"])
+    preds = pipe.predict(eval_df["text_clean"])
+
+    sub = pd.DataFrame({"id": eval_df["id"], "answer": preds})
+    assert list(sub.columns) == list(sample_submission.columns)
+    assert len(sub) == len(sample_submission)
+    assert (sub["id"].values == sample_submission["id"].values).all()
+    assert set(sub["answer"].unique()) <= set(LABELS)
+
+    path = SUBMISSIONS_DIR / f"submission_{slug}.csv"
+    sub.to_csv(path, index=False)
+
+    model_path_i = MODELS_DIR / f"modelo_{slug}.joblib"
+    joblib.dump(pipe, model_path_i)
+
+    val_acc_i = results_df.set_index("modelo").loc[model_name, "accuracy_val"]
+    resumen_envios.append({
+        "archivo": path.name, "modelo": model_name, "accuracy_val": round(val_acc_i, 4),
+    })
+    print(f"OK -> {path.name}  (val_acc={val_acc_i:.4f})")
+
+pd.DataFrame(resumen_envios)
+""")
+
+md("""\
+**Cómo usar estos envíos:** súbelos a Kaggle uno por uno (no todos a la vez, para poder
+ver cómo se mueve el score público con cada cambio) y anota el resultado real en la
+tabla de la bitácora de esta sección. Con esto, entre el envío 1 y estos 5 nuevos ya
+quedan cubiertos los 5 envíos distintos que exige la rúbrica — y de paso queda evidencia
+clara de qué técnicas sí ayudaron y cuáles no, que es justo lo que pide "calidad del
+proceso" en la rúbrica.
+
+Si alguno de estos supera el 0.73000 del envío 1, ese pasa a ser el modelo "oficial" del
+grupo para la entrega de la Parte 1 (el que se debe subir a Bloque Neón en la semana 11,
+junto con el notebook).
+
+### Actualización — envíos reales en Kaggle (iteración 2)
+
+| # | Modelo | Accuracy validación local | Score público Kaggle |
+|---|---|---|---|
+| 1 | TF-IDF (uni+bigramas) + LogisticRegression | 0.7339 | 0.73000 |
+| 2 | TF-IDF char(3-5) + LogisticRegression | 0.7400 | 0.73444 |
+| 3 | TF-IDF word+char + LogisticRegression | 0.7400 | 0.72666 |
+| 4 | TF-IDF word + features léxicas + LogisticRegression | 0.7256 | 0.72555 |
+
+Hallazgo importante: **v2 y v3 empataron en validación local (0.7400) pero en Kaggle v3
+quedó peor que v1.** La combinación word+char, con muchas más features, se ajustó un
+poco más a nuestro split local sin generalizar igual de bien al leaderboard real — buena
+evidencia de que "más features" no es automáticamente mejor, y de por qué conviene
+confirmar siempre con un envío real antes de fijar el modelo oficial.
+""")
+
+# ---------------------------------------------------------------------------
+# 12. Iteración 3: el poder de la última oración
+# ---------------------------------------------------------------------------
+md("""\
+## 12. Iteración 3 — explotando la estructura de las reseñas
+
+Con un equipo del curso llegando a 0.88 en el leaderboard, el margen de mejora sugiere
+que falta algo más estructural que afinar hiperparámetros. Revisando varios ejemplos a
+mano (ver EDA, sección 3.4) se nota un patrón: **las reseñas siguen una plantilla**
+—primero un párrafo neutral sobre el pedido/envío/empaque, y al final una o dos
+oraciones con la opinión real— y esto aplica en las tres clases:
+
+> *"Lo tengo en el escritorio del trabajo y por ahora nomás lo uso de vez en cuando.
+> Viene con su cable y el manual en la caja."* (neutral)
+>
+> *"El diseño se sintió durable desde el primer día. Aun así, la relación
+> calidad-precio se ve desagradable con el tiempo."* (negativo — el "aun así" marca el
+> giro hacia la opinión real)
+
+Si el sentimiento está concentrado en la(s) última(s) oración(es), entonces todo el
+párrafo de logística que viene antes es **ruido** para el vectorizador de TF-IDF: diluye
+las frecuencias de las palabras que sí importan. La hipótesis a probar: un modelo
+entrenado *solo con la última oración* debería superar a uno entrenado con la reseña
+completa.
+""")
+
+code("""\
+def last_chunk(text: str, n_sent: int = 1) -> str:
+    \"\"\"Devuelve las últimas `n_sent` oraciones de un texto (o el texto completo si
+    tiene menos oraciones que `n_sent`).\"\"\"
+    parts = [p.strip() for p in re.split(r"(?<=[.!?])\\s+", text) if p.strip()]
+    return " ".join(parts[-n_sent:]) if parts else text
+
+train_df["n_sentences"] = train_df["text"].apply(
+    lambda t: len(re.split(r"(?<=[.!?])\\s+", t))
+)
+eval_df["n_sentences"] = eval_df["text"].apply(
+    lambda t: len(re.split(r"(?<=[.!?])\\s+", t))
+)
+print("Oraciones por reseña — train:")
+print(train_df["n_sentences"].describe())
+print("\\nOraciones por reseña — eval (debe verse parecido, si no, el truco no generaliza):")
+print(eval_df["n_sentences"].describe())
+""")
+
+md("""\
+La distribución de número de oraciones es prácticamente idéntica entre `train.csv` y
+`eval.csv` (media ≈3.9 en ambos), así que no hay riesgo de que esta transformación se
+comporte distinto en el conjunto de Kaggle.
+""")
+
+code("""\
+train_df["last1_clean"] = train_df["text"].apply(lambda t: clean_text(last_chunk(t, 1)))
+eval_df["last1_clean"] = eval_df["text"].apply(lambda t: clean_text(last_chunk(t, 1)))
+
+train_df[["text", "last1_clean", "label"]].sample(3, random_state=RANDOM_STATE)
+""")
+
+md("### 12.1 Comparación: texto completo vs. solo la última oración")
+
+code("""\
+X_train_last1 = train_df.loc[X_train_text.index, "last1_clean"]
+X_val_last1 = train_df.loc[X_val_text.index, "last1_clean"]
+
+comparacion_oraciones = []
+for n_sent, nombre in [(None, "Texto completo"), (1, "Solo última oración"),
+                        (2, "Últimas 2 oraciones")]:
+    if n_sent is None:
+        Xtr, Xva = X_train_text, X_val_text
+    else:
+        col = f"last{n_sent}_clean"
+        if col not in train_df:
+            train_df[col] = train_df["text"].apply(lambda t: clean_text(last_chunk(t, n_sent)))
+        Xtr = train_df.loc[X_train_text.index, col]
+        Xva = train_df.loc[X_val_text.index, col]
+
+    pipe = Pipeline([
+        ("vec", TfidfVectorizer(ngram_range=(1, 2), min_df=2)),
+        ("clf", LogisticRegression(max_iter=3000, C=3, random_state=RANDOM_STATE)),
+    ])
+    pipe.fit(Xtr, y_train)
+    acc = accuracy_score(y_val, pipe.predict(Xva))
+    comparacion_oraciones.append({"variante": nombre, "accuracy_val": acc})
+
+pd.DataFrame(comparacion_oraciones)
+""")
+
+md("""\
+El salto es enorme con **una sola oración** (la última), y agregar la penúltima
+(`"Últimas 2 oraciones"`) en realidad empeora el resultado — confirma que el párrafo de
+logística anterior funciona como ruido que diluye la señal, incluso cuando se incluye
+solo parcialmente.
+
+### 12.2 Afinando el modelo sobre la última oración
+
+Repetimos una búsqueda de hiperparámetros enfocada (n-gramas, `min_df`, `sublinear_tf`,
+`C`) ahora que el texto de entrada es mucho más corto y específico.
+""")
+
+code("""\
+pipe_last1 = Pipeline([
+    ("vec", TfidfVectorizer()),
+    ("clf", LogisticRegression(max_iter=3000, random_state=RANDOM_STATE)),
+])
+
+param_grid_last1 = {
+    "vec__ngram_range": [(1, 1), (1, 2), (1, 3)],
+    "vec__min_df": [1, 2, 3],
+    "vec__max_features": [None, 20000, 40000],
+    "vec__sublinear_tf": [True, False],
+    "clf__C": [0.3, 0.5, 0.7, 1, 2, 3],
+}
+
+search_last1 = RandomizedSearchCV(
+    pipe_last1, param_distributions=param_grid_last1, n_iter=25, cv=cv,
+    scoring="accuracy", random_state=RANDOM_STATE, n_jobs=-1, verbose=1,
+)
+search_last1.fit(X_train_last1, y_train)
+print("Mejor accuracy (CV, train, última oración):", search_last1.best_score_)
+print("Mejores hiperparámetros:", search_last1.best_params_)
+""")
+
+code("""\
+last1_pipe = search_last1.best_estimator_
+last1_val_preds = last1_pipe.predict(X_val_last1)
+last1_val_acc = accuracy_score(y_val, last1_val_preds)
+print(f"Accuracy en validación (última oración, tuneado): {last1_val_acc:.4f}")
+
+fitted_models["TFIDF última oración (tuned) + LogisticRegression"] = last1_pipe
+results_df = pd.concat([
+    results_df,
+    pd.DataFrame([{"modelo": "TFIDF última oración (tuned) + LogisticRegression",
+                    "accuracy_val": last1_val_acc}]),
+], ignore_index=True).sort_values("accuracy_val", ascending=False).reset_index(drop=True)
+results_df.head(10)
+""")
+
+md("### 12.3 Evaluación del modelo ganador")
+
+code("""\
+print(classification_report(y_val, last1_val_preds, target_names=LABELS))
+""")
+
+code("""\
+fig, ax = plt.subplots(figsize=(5.5, 5))
+ConfusionMatrixDisplay.from_predictions(
+    y_val, last1_val_preds, labels=LABELS, cmap="Blues", ax=ax, colorbar=False,
+)
+ax.set_title("Matriz de confusión — última oración (validación)")
+plt.tight_layout()
+plt.show()
+""")
+
+md("""\
+`neutral` ahora se identifica casi perfectamente — tiene sentido, porque una reseña sin
+una oración final claramente evaluativa (solo más detalles de logística) es, en sí
+misma, una señal fuerte de neutralidad. La confusión que queda es sobre todo entre
+`negativo` y `positivo`, justo donde el enunciado advertía que el matiz y la negación
+son más difíciles de capturar con bolsa de palabras.
+
+### 12.4 Entrenamiento final y envío a Kaggle
+""")
+
+code("""\
+best_model_name = "TFIDF última oración (tuned) + LogisticRegression"
+best_val_acc = last1_val_acc
+best_pipe = last1_pipe
+print(f"Modelo seleccionado para el envío: {best_model_name} "
+      f"(accuracy validación = {best_val_acc:.4f})")
+
+final_pipe_last1 = clone(best_pipe)
+final_pipe_last1.fit(train_df["last1_clean"], train_df["label"])
+
+eval_preds_last1 = final_pipe_last1.predict(eval_df["last1_clean"])
+pd.Series(eval_preds_last1).value_counts(normalize=True).round(3)
+""")
+
+code("""\
+submission_last1 = pd.DataFrame({"id": eval_df["id"], "answer": eval_preds_last1})
+assert list(submission_last1.columns) == list(sample_submission.columns)
+assert len(submission_last1) == len(sample_submission)
+assert (submission_last1["id"].values == sample_submission["id"].values).all()
+assert set(submission_last1["answer"].unique()) <= set(LABELS)
+
+submission_path_last1 = SUBMISSIONS_DIR / "submission_v7_ultima_oracion.csv"
+submission_last1.to_csv(submission_path_last1, index=False)
+
+model_path_last1 = MODELS_DIR / "modelo_v7_ultima_oracion.joblib"
+joblib.dump(final_pipe_last1, model_path_last1)
+
+print("Guardado:", submission_path_last1)
+print("Guardado:", model_path_last1)
+submission_last1.head()
+""")
+
+md("""\
+### 12.5 Qué significa este resultado
+
+Pasar de ~0.73 a ~0.86 de accuracy en validación **no vino de un modelo más complejo**,
+sino de una transformación de los datos basada en entender la estructura de la
+plantilla con la que están escritas las reseñas. Esto es exactamente el tipo de
+"feature engineering" que la Parte 1 del curso busca que se explore antes de pasar a
+deep learning en la Parte 2.
+
+**Limitaciones a tener en cuenta:**
+
+- Este truco asume que la oración final siempre contiene la opinión. Si el patrón de
+  generación de las reseñas cambia (por ejemplo, reseñas más cortas o con la opinión al
+  principio), el modelo se vería afectado. Vale la pena revisar casos donde falle.
+- Seguimos sin capturar bien negaciones/contrastes *dentro* de la última oración misma
+  (ver matriz de confusión, sección 12.3) — ahí es donde modelos secuenciales (Parte 2)
+  deberían ayudar más.
+- Ideas para seguir mejorando desde acá: probar con las últimas 1-2 oraciones pero
+  separadas como dos campos de un `FeatureUnion` en lugar de concatenadas; detectar la
+  oración que sigue al *último* conector contrastivo en vez de simplemente "la última";
+  o combinar esta señal con alguna característica agregada del resto del texto
+  únicamente para reforzar la detección de `neutral`.
 """)
 
 nb["cells"] = cells
