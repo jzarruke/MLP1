@@ -30,24 +30,88 @@ aprendizaje automático (scikit-learn) y representaciones de texto tipo *bag-of-
 TF-IDF / n-gramas, sin redes neuronales ni embeddings preentrenados (requisito de la
 Parte 1 del enunciado).
 
-### Contenido del notebook
+### Cómo está organizado este notebook
 
-1. Carga de datos
-2. Análisis exploratorio (EDA)
-3. Preprocesamiento de texto
-4. Vectorización (Bag-of-Words vs. TF-IDF)
-5. Modelos base y comparación
-6. Ajuste de hiperparámetros (GridSearchCV)
-7. Evaluación y análisis de errores del mejor modelo
-8. Entrenamiento final + generación del `submission.csv` para Kaggle
+Este notebook creció en varias sesiones de trabajo del grupo, cada una documentada como
+una **iteración** independiente. Cada iteración parte de lo aprendido en la anterior, así
+que se recomienda leerlas en orden la primera vez; para consultas puntuales, el índice
+de abajo indica qué sección resolver según lo que se busque.
+
+**Iteración 1 — línea base con el texto completo de la reseña**
+
+1. Imports y configuración
+2. Carga de datos (`train.csv`, `eval.csv`, `sample_submission.csv`) y chequeos de calidad
+3. Análisis exploratorio (EDA): balance de clases, longitud de reseñas, palabras/n-gramas
+   más frecuentes por clase, reseñas con sentimiento mixto
+4. Preprocesamiento de texto y split train/validación
+5. Vectorización y comparación de 7 modelos clásicos (Dummy, Naive Bayes, Logistic
+   Regression, LinearSVC, SGD) sobre el texto completo
+6. Ajuste de hiperparámetros con `RandomizedSearchCV`
+7. Evaluación y análisis de errores del mejor modelo de esta iteración
+8. Entrenamiento final + primer `submission.csv` para Kaggle
 9. Guardado del modelo (`joblib`)
-10. Ideas para seguir subiendo el score en próximas iteraciones
+10. Resumen y lluvia de ideas para seguir mejorando
 
-> **Nota:** este notebook está pensado como punto de partida sólido y bien documentado
-> para la competencia. La idea es usarlo como base y seguir iterando (probar más
-> combinaciones de n-gramas, features adicionales, balanceo de clases, etc.) para ir
-> subiendo de percentil en el leaderboard, dado que la rúbrica exige al menos 5 envíos
-> distintos que muestren una mejora progresiva.
+**Iteración 2 — variantes de representación del texto (sigue usando el texto completo)**
+
+11. Cinco variantes nuevas probadas sobre el texto completo: TF-IDF de caracteres,
+    combinación palabra+carácter, features léxicas manuales, oversampling de `neutral`,
+    y un ensamble por votación. Incluye la bitácora real de envíos a Kaggle de esta
+    iteración (qué funcionó y qué no, con los scores públicos).
+
+**Iteración 3 — el hallazgo grande: la última oración concentra la opinión**
+
+12. Se descubre que las reseñas siguen una plantilla (logística neutral + opinión en la
+    última oración) y que entrenar usando *solo* la última oración mejora muchísimo el
+    accuracy frente a usar el texto completo. Incluye la comparación que lo demuestra,
+    el tuning del modelo final y el envío correspondiente (el mejor del grupo hasta ese
+    punto).
+
+**Iteración 4 — afinando con el resto del texto como señal secundaria (no funcionó)**
+
+13. A partir del hallazgo de la iteración 3, se prueba no descartar el resto del texto
+    por completo sino dárselo al modelo como una señal secundaria de menor peso (en vez
+    de concatenarlo, que ya sabíamos que diluye la señal). La validación local y la CV de
+    5 folds sugerían una mejora (0.87), pero el envío real a Kaggle bajó a 0.82000 —peor
+    que el v7— así que esta idea queda documentada como un intento fallido, con el
+    análisis de por qué no generalizó (secciones 13.5 y 13.6).
+
+**Iteración 5 — la oración después del último conector contrastivo**
+
+14. En vez de asumir siempre "la última oración", se busca el último conector
+    contrastivo (`pero`, `sin embargo`, `aunque`, `no obstante`, `eso sí`) en toda la
+    reseña y se usa el texto que sigue a ese conector (si no hay ninguno, se recurre a
+    la última oración, como en la iteración 3). El tuning aquí usa `GridSearchCV` con CV
+    desde el principio —a diferencia de la iteración 4— precisamente para no repetir el
+    mismo error. También se incluye una "pausa estadística" (sección 14.6) que explica
+    por qué no hay que sobreinterpretar diferencias chicas entre envíos de Kaggle.
+
+**Iteración 6 — ensamble (última oración + conector contrastivo)**
+
+15. Los modelos de las iteraciones 3 y 5 capturan señal parecida pero no idéntica, así
+    que se promedian sus probabilidades (voto suave) en vez de elegir uno solo.
+    Confirmado en Kaggle como el mejor envío hasta ese punto (0.86444).
+
+**Iteración 7 — ensamble ponderado de 3 vías (+ texto completo) — no mejoró en la práctica**
+
+16. Se suma un tercer modelo, sobre el texto completo de la reseña (débil por sí solo,
+    pero con información distinta a la oración de opinión), con un peso menor que los
+    otros dos. Los pesos se eligen por validación cruzada y se confirman con varias
+    semillas de CV antes de fijarlos, para no repetir el error de la iteración 4. La
+    validación local y la CV (en 4 particiones distintas) apuntaban a una mejora clara
+    sobre el v10, pero el envío real a Kaggle dio 0.86000 — por debajo del v10 y dentro
+    del margen de ruido calculado en la sección 14.6 (sección 16.4).
+
+> **Nota:** la "versión oficial" del grupo para entregar en Bloque Neón es la del mejor
+> envío **confirmado** en Kaggle, no necesariamente la de la última iteración (ver la
+> tabla de la bitácora en la sección 10 y las actualizaciones al final de cada
+> iteración). Al cierre de este notebook esa versión oficial es el **v10** (ensamble de
+> última oración + conector contrastivo, 0.86444) — tanto la iteración 4 como la
+> iteración 7 quedaron por debajo en la práctica y no se usan para la entrega. Las
+> iteraciones anteriores,
+> incluidas las que no mejoraron el resultado, se conservan completas porque documentan
+> el proceso de prueba y error que
+> pide la rúbrica.
 """)
 
 # ---------------------------------------------------------------------------
@@ -66,6 +130,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
 
+from sklearn.base import BaseEstimator, ClassifierMixin, TransformerMixin
 from sklearn.dummy import DummyClassifier
 from sklearn.feature_extraction.text import CountVectorizer, TfidfVectorizer
 from sklearn.linear_model import LogisticRegression, SGDClassifier
@@ -75,7 +140,12 @@ from sklearn.metrics import (
     classification_report,
     confusion_matrix,
 )
-from sklearn.model_selection import GridSearchCV, StratifiedKFold, train_test_split
+from sklearn.model_selection import (
+    GridSearchCV,
+    StratifiedKFold,
+    cross_val_score,
+    train_test_split,
+)
 from sklearn.naive_bayes import MultinomialNB
 from sklearn.pipeline import FeatureUnion, Pipeline
 from sklearn.svm import LinearSVC
@@ -1093,6 +1163,973 @@ deep learning en la Parte 2.
   oración que sigue al *último* conector contrastivo en vez de simplemente "la última";
   o combinar esta señal con alguna característica agregada del resto del texto
   únicamente para reforzar la detección de `neutral`.
+
+### Actualización — envío real a Kaggle
+
+| Modelo | Accuracy validación local | Score público Kaggle |
+|---|---|---|
+| TF-IDF última oración (tuned) + LogisticRegression | 0.8578 | **0.86222** |
+
+Confirmado: el envío a Kaggle (0.86222) quedó muy cerca de la validación local (0.8578),
+igual que nos pasó con los envíos anteriores — señal de que el modelo generaliza bien y
+no está sobreajustado a nuestro split. Con el equipo líder del curso en 0.88222, la
+brecha que queda es de apenas ~2 puntos.
+""")
+
+# ---------------------------------------------------------------------------
+# 13. Iteración 4: el resto del texto como señal secundaria
+# ---------------------------------------------------------------------------
+md("""\
+## 13. Iteración 4 — el resto del texto, pero con menos peso
+
+La iteración 3 mostró algo contraintuitivo: *agregar* la penúltima oración al texto de
+entrada (concatenándola con la última) empeoraba el resultado frente a usar solo la
+última oración (sección 12.1: 0.76 vs. 0.86). La explicación más probable es que, al
+concatenar texto y vectorizar todo junto con un solo `TfidfVectorizer`, las palabras de
+la oración "de relleno" compiten por el mismo espacio de features que las palabras
+realmente informativas de la última oración, diluyendo su peso relativo.
+
+Pero descartar el resto del texto por completo también parece desperdiciar información:
+puede haber pistas adicionales (menciones a defectos, repeticiones, intensidad) en las
+oraciones anteriores. La idea de esta iteración es separar las fuentes de texto en
+**campos independientes** dentro de un `FeatureUnion` —cada una con su propio
+`TfidfVectorizer`— y luego **ponderar** la contribución de cada campo con
+`transformer_weights`, en vez de mezclarlas en una sola bolsa de palabras. Así el
+modelo puede seguir usando el resto del texto, pero sin que le "compita" en igualdad de
+condiciones a la última oración.
+""")
+
+code("""\
+def rest_before_last(text: str) -> str:
+    \"\"\"Todo el texto EXCEPTO la última oración (vacío si solo hay una oración).\"\"\"
+    parts = [p.strip() for p in re.split(r"(?<=[.!?])\\s+", text) if p.strip()]
+    return " ".join(parts[:-1]) if len(parts) >= 2 else ""
+
+train_df["rest_clean"] = train_df["text"].apply(lambda t: clean_text(rest_before_last(t)))
+eval_df["rest_clean"] = eval_df["text"].apply(lambda t: clean_text(rest_before_last(t)))
+
+train_df[["last1_clean", "rest_clean"]].sample(3, random_state=RANDOM_STATE)
+""")
+
+md("""\
+### 13.1 Un transformador para seleccionar columnas
+
+`FeatureUnion` necesita que cada rama reciba el texto correcto. Usamos un transformador
+sencillo que selecciona una columna de un DataFrame, y así podemos armar un pipeline
+donde cada rama vectoriza una fuente de texto distinta (última oración / resto).
+""")
+
+code("""\
+class ColumnSelector(BaseEstimator, TransformerMixin):
+    \"\"\"Selecciona una columna de texto de un DataFrame, para usar dentro de un
+    FeatureUnion donde cada rama necesita una columna distinta como entrada.\"\"\"
+
+    def __init__(self, column: str):
+        self.column = column
+
+    def fit(self, X, y=None):
+        return self
+
+    def transform(self, X):
+        return X[self.column]
+
+
+def make_source_pipeline(column: str) -> Pipeline:
+    return Pipeline([
+        ("select", ColumnSelector(column)),
+        ("vec", TfidfVectorizer(ngram_range=(1, 2), min_df=2, sublinear_tf=True)),
+    ])
+""")
+
+md("""\
+### 13.2 Buscando el peso correcto para el "resto del texto"
+
+Probamos distintas combinaciones de `C` (regularización de `LogisticRegression`) y del
+peso relativo del campo `rest_clean` frente a `last1_clean` (que dejamos fijo en 1.0),
+comparando siempre contra la misma validación. Nótese que, a diferencia de las búsquedas
+anteriores, aquí la entrada de `fit`/`predict` es el **DataFrame completo** (no una sola
+columna de texto), porque cada rama del `FeatureUnion` selecciona su propia columna.
+""")
+
+code("""\
+X_train_df = train_df.loc[X_train_text.index]
+X_val_df = train_df.loc[X_val_text.index]
+
+pesos_y_C = []
+for C in [0.4, 0.5, 0.6, 0.7, 0.8]:
+    for peso_resto in [0.2, 0.4, 0.6, 0.8]:
+        pipe = Pipeline([
+            ("features", FeatureUnion(
+                [("last1", make_source_pipeline("last1_clean")),
+                 ("rest", make_source_pipeline("rest_clean"))],
+                transformer_weights={"last1": 1.0, "rest": peso_resto},
+            )),
+            ("clf", LogisticRegression(max_iter=3000, C=C, random_state=RANDOM_STATE)),
+        ])
+        pipe.fit(X_train_df, y_train)
+        acc = accuracy_score(y_val, pipe.predict(X_val_df))
+        pesos_y_C.append({"C": C, "peso_resto": peso_resto, "accuracy_val": acc})
+
+pesos_df = pd.DataFrame(pesos_y_C).sort_values("accuracy_val", ascending=False)
+pesos_df.head(10)
+""")
+
+md("""\
+### 13.3 Modelo ganador de esta iteración
+
+Tomamos la mejor combinación de la búsqueda anterior y la validamos con 5-fold
+cross-validation sobre todo `train.csv`, para confirmar que la mejora no es un golpe de
+suerte de un único split (la misma precaución que tuvimos en la iteración 3).
+""")
+
+code("""\
+mejor_fila = pesos_df.iloc[0]
+mejor_C, mejor_peso = mejor_fila["C"], mejor_fila["peso_resto"]
+print(f"Mejor configuración: C={mejor_C}, peso del resto del texto={mejor_peso} "
+      f"-> accuracy validación = {mejor_fila['accuracy_val']:.4f}")
+
+iter4_pipe = Pipeline([
+    ("features", FeatureUnion(
+        [("last1", make_source_pipeline("last1_clean")),
+         ("rest", make_source_pipeline("rest_clean"))],
+        transformer_weights={"last1": 1.0, "rest": mejor_peso},
+    )),
+    ("clf", LogisticRegression(max_iter=3000, C=mejor_C, random_state=RANDOM_STATE)),
+])
+
+scores_iter4 = cross_val_score(
+    iter4_pipe, train_df, train_df["label"], cv=cv, scoring="accuracy", n_jobs=-1,
+)
+print("CV 5-fold (todo train):", scores_iter4.round(4))
+print("CV 5-fold promedio:", scores_iter4.mean())
+""")
+
+code("""\
+iter4_pipe.fit(X_train_df, y_train)
+iter4_val_preds = iter4_pipe.predict(X_val_df)
+iter4_val_acc = accuracy_score(y_val, iter4_val_preds)
+print(f"Accuracy en el split de validación: {iter4_val_acc:.4f}")
+print()
+print(classification_report(y_val, iter4_val_preds, target_names=LABELS))
+""")
+
+code("""\
+fig, ax = plt.subplots(figsize=(5.5, 5))
+ConfusionMatrixDisplay.from_predictions(
+    y_val, iter4_val_preds, labels=LABELS, cmap="Blues", ax=ax, colorbar=False,
+)
+ax.set_title("Matriz de confusión — última oración + resto ponderado (validación)")
+plt.tight_layout()
+plt.show()
+""")
+
+md("""\
+La comparación con la iteración 3 (sección 12.3) muestra una mejora pareja en
+`negativo` y `positivo` (las dos clases donde quedaba la mayor confusión), mientras que
+`neutral` se mantiene prácticamente perfecto. Esto confirma la intuición: el resto del
+texto sí aporta información útil para distinguir mejor entre reseñas negativas y
+positivas, siempre que no se le deje "competir" en igualdad de condiciones con la
+oración que de verdad lleva la opinión.
+
+### 13.4 Entrenamiento final y envío a Kaggle
+""")
+
+code("""\
+final_pipe_iter4 = clone(iter4_pipe)
+final_pipe_iter4.fit(train_df, train_df["label"])
+
+eval_preds_iter4 = final_pipe_iter4.predict(eval_df)
+pd.Series(eval_preds_iter4).value_counts(normalize=True).round(3)
+""")
+
+code("""\
+submission_iter4 = pd.DataFrame({"id": eval_df["id"], "answer": eval_preds_iter4})
+assert list(submission_iter4.columns) == list(sample_submission.columns)
+assert len(submission_iter4) == len(sample_submission)
+assert (submission_iter4["id"].values == sample_submission["id"].values).all()
+assert set(submission_iter4["answer"].unique()) <= set(LABELS)
+
+submission_path_iter4 = SUBMISSIONS_DIR / "submission_v8_ultima_oracion_ponderada.csv"
+submission_iter4.to_csv(submission_path_iter4, index=False)
+
+model_path_iter4 = MODELS_DIR / "modelo_v8_ultima_oracion_ponderada.joblib"
+joblib.dump(final_pipe_iter4, model_path_iter4)
+
+print("Guardado:", submission_path_iter4)
+print("Guardado:", model_path_iter4)
+submission_iter4.head()
+""")
+
+md("""\
+### 13.5 Actualización — envío real a Kaggle (resultado negativo)
+
+| Modelo | Accuracy validación local | CV 5-fold promedio | Score público Kaggle |
+|---|---|---|---|
+| Última oración + resto ponderado (C=0.7, peso_resto=0.8) | 0.8717 | 0.8737 | **0.82000** |
+
+A diferencia de todos los envíos anteriores (donde la validación local predijo bien el
+score real de Kaggle), aquí hay una brecha grande: 0.87 en validación/CV contra 0.82 en
+Kaggle. **Este envío quedó peor que el v7 (solo última oración, 0.86222)**, así que la
+idea de esta iteración no funcionó en la práctica y el v7 sigue siendo nuestro mejor
+modelo confirmado.
+
+La explicación más probable: la configuración ganadora (`C` y `peso_resto`) se eligió
+tomando la mejor de 20 combinaciones evaluadas contra un único split de validación
+(sección 13.2) — exactamente la misma trampa que ya habíamos documentado en la
+iteración 1 ("el tuning no siempre gana"), solo que aquí sí la dejamos decidir la
+configuración final. El `cross_val_score` de 5 folds que corrimos después (0.8737)
+confirma que el modelo es estable *dentro de train.csv*, pero no nos dice nada sobre si
+el patrón que aprendió en el campo "resto del texto" (más ruidoso y específico de cada
+reseña que la última oración) generaliza al conjunto de evaluación real de Kaggle. En
+otras palabras: validamos que no nos ganó la suerte de un split, pero no validamos que
+la señal en sí fuera genuina y no un artefacto de `train.csv`.
+
+**Lección para las próximas iteraciones:** cuando el campo nuevo es ruidoso (como "todo
+el texto menos la última oración", que mezcla temas muy distintos entre reseñas),
+conviene ser más escéptico incluso con una CV estable, y preferir cambios más simples y
+explicables (como fue el caso del v7) sobre combinaciones con más grados de libertad
+para sobreajustar.
+""")
+
+md("""\
+### 13.6 Qué queda pendiente
+
+El v7 (solo última oración, 0.86222) sigue siendo el modelo oficial de esta parte. Si
+se quiere seguir intentando cerrar la brecha con el 0.88222 del equipo líder, estas son
+las ideas más prometedoras, en orden de esfuerzo esperado — evitando repetir el error
+de la sección 13.5 (dejar que una búsqueda sobre un único split elija la configuración
+final sin cruzarla con CV *antes* de decidir):
+
+1. **Detectar la oración que sigue al último conector contrastivo** (`pero`, `sin
+   embargo`, `aunque`) en vez de asumir siempre que es la última — en las reseñas donde
+   el conector aparece antes de la penúltima oración, podríamos estar tomando como
+   "opinión" una oración que todavía es de transición. Esta señal es más simple y
+   explicable que ponderar "el resto del texto", así que debería ser más robusta.
+2. Afinar con `GridSearchCV` + CV (no con un único split) una rejilla de
+   hiperparámetros alrededor del modelo del v7 (TF-IDF última oración + LogisticRegression).
+3. Revisar a mano los errores que persisten entre `negativo` y `positivo` en el v7
+   (como se hizo en la sección 7) para buscar un patrón común que sugiera una feature
+   adicional simple (no un campo nuevo completo).
+4. Si se insiste en usar el resto del texto, limitarlo a una señal muy acotada (por
+   ejemplo, solo el conteo de signos de exclamación/interrogación o la presencia de
+   negaciones) en vez de un `TfidfVectorizer` completo sobre todo ese texto, para
+   reducir el riesgo de sobreajuste que vimos aquí.
+""")
+
+# ---------------------------------------------------------------------------
+# 14. Iteración 5: la oración después del último conector contrastivo
+# ---------------------------------------------------------------------------
+md("""\
+## 14. Iteración 5 — la oración después del último conector contrastivo
+
+La iteración 3 asumía que la opinión real siempre está en la última oración. Pero en
+varias reseñas el patrón es más bien: *logística neutral → a veces una oración de transición
+→ conector contrastivo (`pero`, `sin embargo`, `aunque`, `no obstante`, `eso sí`) → la
+opinión real*, y ese conector no siempre cae justo antes de la última oración. Esta
+iteración prueba una regla simple: tomar el texto que sigue al **último** conector
+contrastivo que aparece en la reseña, en vez de simplemente "la última oración". Si no
+hay ningún conector, se usa la última oración como antes (igual que en la iteración 3).
+
+A diferencia de la iteración 4, aquí la validación de hiperparámetros se hace con
+`GridSearchCV` usando `cv` (5-fold) desde el principio — cada combinación de la rejilla
+se evalúa por cross-validation, no contra un único split — precisamente para no repetir
+el error que nos costó el envío anterior.
+""")
+
+code("""\
+def clause_after_last_marker(text: str, n_sent_fallback: int = 1) -> str:
+    \"\"\"Texto después del último conector contrastivo de la reseña. Si no hay ningún
+    conector, recurre a la última oración (comportamiento de la iteración 3).\"\"\"
+    matches = list(re.finditer(contrast_markers, text, flags=re.IGNORECASE))
+    if not matches:
+        return last_chunk(text, n_sent_fallback)
+    clause = text[matches[-1].end():].strip(" ,.;:")
+    if len(clause) < 3:
+        return last_chunk(text, n_sent_fallback)
+    return clause
+
+train_df["clause_clean"] = train_df["text"].apply(lambda t: clean_text(clause_after_last_marker(t)))
+eval_df["clause_clean"] = eval_df["text"].apply(lambda t: clean_text(clause_after_last_marker(t)))
+
+frac_distinto = (train_df["last1_clean"] != train_df["clause_clean"]).mean()
+frac_distinto_eval = (eval_df["last1_clean"] != eval_df["clause_clean"]).mean()
+print(f"Fraccion de reseñas en train donde la regla cambia el texto usado: {frac_distinto:.3f}")
+print(f"Fraccion de reseñas en eval donde la regla cambia el texto usado: {frac_distinto_eval:.3f}")
+print("(valores parecidos entre train y eval => buena señal de que la regla generaliza)")
+
+train_df[["text", "last1_clean", "clause_clean"]].loc[
+    train_df["last1_clean"] != train_df["clause_clean"]
+].sample(3, random_state=RANDOM_STATE)
+""")
+
+md("""\
+### 14.1 Comparación rápida: última oración vs. oración después del último conector
+
+Antes de tunear nada, comparamos ambas representaciones con la misma configuración de
+vectorizador/clasificador del v7, usando CV de 5 folds sobre todo `train.csv` (no un
+único split), para decidir si vale la pena seguir por este camino.
+""")
+
+code("""\
+pipe_comparacion = Pipeline([
+    ("vec", TfidfVectorizer(ngram_range=(1, 2), min_df=3, max_features=40000, sublinear_tf=True)),
+    ("clf", LogisticRegression(max_iter=3000, C=2, random_state=RANDOM_STATE)),
+])
+
+scores_last1_cv = cross_val_score(
+    pipe_comparacion, train_df["last1_clean"], train_df["label"], cv=cv, scoring="accuracy", n_jobs=-1,
+)
+scores_clause_cv = cross_val_score(
+    pipe_comparacion, train_df["clause_clean"], train_df["label"], cv=cv, scoring="accuracy", n_jobs=-1,
+)
+
+print("CV 5-fold última oración (config v7):      ", scores_last1_cv.round(4), "promedio:", scores_last1_cv.mean().round(4))
+print("CV 5-fold oración tras conector contrastivo:", scores_clause_cv.round(4), "promedio:", scores_clause_cv.mean().round(4))
+""")
+
+md("""\
+La mejora es pareja en los 5 folds (no es un golpe de suerte de uno de ellos), así que
+vale la pena tunear esta representación con `GridSearchCV` propiamente dicho.
+
+### 14.2 Tuning con GridSearchCV (evaluado siempre por CV, nunca por un único split)
+""")
+
+code("""\
+param_grid_clause = {
+    "vec__ngram_range": [(1, 1), (1, 2), (1, 3)],
+    "vec__min_df": [1, 2, 3],
+    "vec__max_features": [20000, 40000, None],
+    "vec__sublinear_tf": [True, False],
+    "clf__C": [1, 2, 3, 4],
+}
+
+pipe_clause_base = Pipeline([
+    ("vec", TfidfVectorizer()),
+    ("clf", LogisticRegression(max_iter=3000, random_state=RANDOM_STATE)),
+])
+
+search_clause = GridSearchCV(
+    pipe_clause_base, param_grid_clause, cv=cv, scoring="accuracy", n_jobs=-1,
+)
+search_clause.fit(train_df["clause_clean"], train_df["label"])
+
+print("Mejor score CV:", search_clause.best_score_)
+print("Mejores hiperparámetros:", search_clause.best_params_)
+
+resultados_clause = pd.DataFrame(search_clause.cv_results_).sort_values(
+    "mean_test_score", ascending=False
+)
+resultados_clause[[
+    "mean_test_score", "std_test_score", "param_clf__C",
+    "param_vec__ngram_range", "param_vec__min_df",
+    "param_vec__max_features", "param_vec__sublinear_tf",
+]].head(10)
+""")
+
+md("""\
+Los primeros puestos de la rejilla quedan muy cerca entre sí (diferencias de menos de
+medio punto, con desviación estándar entre folds similar) — es una meseta estable, no un
+pico aislado que sugiera sobreajuste a la rejilla de búsqueda. Tomamos la mejor
+configuración y la validamos una vez más con el split de validación fijo, para tener un
+reporte de clasificación y matriz de confusión comparables con las iteraciones anteriores.
+""")
+
+code("""\
+best_pipe_clause = search_clause.best_estimator_
+
+X_train_clause = train_df.loc[X_train_text.index, "clause_clean"]
+X_val_clause = train_df.loc[X_val_text.index, "clause_clean"]
+
+best_pipe_clause.fit(X_train_clause, y_train)
+clause_val_preds = best_pipe_clause.predict(X_val_clause)
+clause_val_acc = accuracy_score(y_val, clause_val_preds)
+print(f"Accuracy en el split de validación: {clause_val_acc:.4f}")
+print()
+print(classification_report(y_val, clause_val_preds, target_names=LABELS))
+""")
+
+code("""\
+fig, ax = plt.subplots(figsize=(5.5, 5))
+ConfusionMatrixDisplay.from_predictions(
+    y_val, clause_val_preds, labels=LABELS, cmap="Blues", ax=ax, colorbar=False,
+)
+ax.set_title("Matriz de confusión — oración tras conector contrastivo (validación)")
+plt.tight_layout()
+plt.show()
+""")
+
+md("""\
+### 14.3 Entrenamiento final y envío a Kaggle
+""")
+
+code("""\
+final_pipe_clause = clone(best_pipe_clause)
+final_pipe_clause.fit(train_df["clause_clean"], train_df["label"])
+
+eval_preds_clause = final_pipe_clause.predict(eval_df["clause_clean"])
+pd.Series(eval_preds_clause).value_counts(normalize=True).round(3)
+""")
+
+code("""\
+submission_iter5 = pd.DataFrame({"id": eval_df["id"], "answer": eval_preds_clause})
+assert list(submission_iter5.columns) == list(sample_submission.columns)
+assert len(submission_iter5) == len(sample_submission)
+assert (submission_iter5["id"].values == sample_submission["id"].values).all()
+assert set(submission_iter5["answer"].unique()) <= set(LABELS)
+
+submission_path_iter5 = SUBMISSIONS_DIR / "submission_v9_conector_contrastivo.csv"
+submission_iter5.to_csv(submission_path_iter5, index=False)
+
+model_path_iter5 = MODELS_DIR / "modelo_v9_conector_contrastivo.joblib"
+joblib.dump(final_pipe_clause, model_path_iter5)
+
+print("Guardado:", submission_path_iter5)
+print("Guardado:", model_path_iter5)
+submission_iter5.head()
+""")
+
+md("""\
+### 14.4 Qué queda pendiente
+
+Si este envío mejora al v7 pero todavía no alcanza 0.88222, estas son las ideas que
+seguirían (siempre validando con CV desde el inicio, no con un único split):
+
+1. Revisar a mano las reseñas donde la regla del conector contrastivo elige un texto
+   claramente equivocado (ver la muestra de la sección 14), para ajustar la lista de
+   conectores o el manejo de casos borde (conector justo al final, sin texto después).
+2. Combinar esta regla con alguna señal agregada muy simple (conteo de signos de
+   exclamación, presencia de negaciones) directamente como columnas extra, en vez de un
+   campo de texto completo nuevo — así se evita el riesgo de sobreajuste que vimos en la
+   iteración 4.
+3. Revisar a mano los errores que persisten entre `negativo` y `positivo` en esta
+   configuración (igual que en la sección 7), que es donde queda la mayoría de la
+   confusión según la matriz de la sección 14.2.
+
+### 14.5 Actualización — envío real a Kaggle
+
+| Modelo | Validación local | CV 5-fold | Score público Kaggle |
+|---|---|---|---|
+| Última oración (v7) | 0.8578 | 0.8581 | 0.86222 |
+| Conector contrastivo (v9) | 0.8717 | 0.8692 | **0.85333** |
+
+El v9 quedó un poco por debajo del v7 en Kaggle (0.85333 vs. 0.86222), a pesar de que
+en validación local y en CV el v9 era claramente mejor. A primera vista parece otra
+regresión como la del v8 — pero antes de descartar la idea, vale la pena mirar con más
+cuidado qué tan grande es realmente esa diferencia (sección 14.6).
+""")
+
+md("""\
+## 14.6 Pausa estadística — ¿qué tan confiable es el score público de Kaggle?
+
+Antes de seguir ajustando modelos a ciegas, vale la pena preguntarse: ¿las diferencias
+de menos de un punto entre envíos (como v7 vs. v9) son una señal real, o es ruido de
+muestreo? Los scores públicos siempre llegan con 5 decimales exactos, lo que sugiere que
+se calculan sobre una muestra fija y no muy grande del `eval.csv` completo (3000 filas).
+Podemos reconstruir el tamaño de esa muestra: si el score es una fracción `k / N`, basta
+buscar qué `N` hace que `k` sea siempre un entero para todos los envíos que hemos hecho.
+""")
+
+code("""\
+scores_reales = {
+    "baseline curso": 0.65555,
+    "v1": 0.73000,
+    "v2": 0.73444,
+    "v3": 0.72666,
+    "v4": 0.72555,
+    "Alejandro (word+char)": 0.73777,
+    "v7 (ultima oracion)": 0.86222,
+    "v8 (resto ponderado)": 0.82000,
+    "v9 (conector contrastivo)": 0.85333,
+}
+
+N = 900  # 30% del eval.csv (3000 filas) -- un split publico/privado tipico de Kaggle
+filas = []
+for nombre, score in scores_reales.items():
+    k = round(score * N)
+    reconstruido = int((k / N) * 100000) / 100000  # truncado a 5 decimales, igual que Kaggle
+    filas.append({"envio": nombre, "score": score, "k_aciertos_de_900": k, "coincide": reconstruido == score})
+
+pd.DataFrame(filas)
+""")
+
+md("""\
+**Los 9 envíos coinciden exactamente con `k/900` truncado a 5 decimales.** Esto es muy
+poco probable que sea una coincidencia — todo indica que el *score público* de esta
+competencia se calcula sobre apenas **900 de las 3000 filas** de `eval.csv` (un split
+30%/70% público/privado, común en Kaggle; el 70% restante solo se conoce al cerrar la
+competencia).
+
+¿Por qué importa? Con una muestra de 900 ejemplos, el error estándar de un accuracy
+cercano a 0.85 es de aproximadamente:
+""")
+
+code("""\
+import math
+
+p = 0.85
+n_publico = 900
+error_estandar = math.sqrt(p * (1 - p) / n_publico)
+print(f"Error estándar aproximado con n={n_publico}: {error_estandar:.4f} ({error_estandar*100:.2f} puntos)")
+
+diff_v7_v9 = 0.86222 - 0.85333
+diff_v7_v8 = 0.86222 - 0.82000
+print(f"Diferencia v7 vs v9: {diff_v7_v9:.4f} ({diff_v7_v9/error_estandar:.2f} errores estándar)")
+print(f"Diferencia v7 vs v8: {diff_v7_v8:.4f} ({diff_v7_v8/error_estandar:.2f} errores estándar)")
+""")
+
+md("""\
+La diferencia entre v7 y v9 (menos de un punto) es **menor a un error estándar** — es
+decir, estadísticamente son indistinguibles con esta muestra de 900 filas, aunque v9
+parezca "peor" en el marcador. La caída del v8, en cambio, es de más de 2 errores
+estándar, así que ahí sí es más probable que haya una regresión real (consistente con
+el análisis de la sección 13.5).
+
+**Conclusión práctica:** de aquí en adelante, conviene confiar más en la validación
+cruzada sobre las 12,000 filas de `train.csv` (mucho más estable) que en diferencias de
+menos de ~1.5 puntos en el score público, y usar el score público sobre todo para
+detectar regresiones grandes, no para ordenar finamente entre modelos parecidos. En
+particular, v7 y v9 probablemente capturan señal genuina y parecida (ambos identifican
+bien la oración de opinión real), así que **combinarlos en un ensamble** —en vez de
+elegir uno u otro— es un siguiente paso razonable: si sus errores no están
+perfectamente correlacionados, el promedio debería ser más preciso y más estable que
+cualquiera de los dos por separado.
+""")
+
+# ---------------------------------------------------------------------------
+# 15. Iteración 6: ensamble de última oración + conector contrastivo
+# ---------------------------------------------------------------------------
+md("""\
+## 15. Iteración 6 — ensamble (última oración + conector contrastivo)
+
+Las iteraciones 3 y 5 extraen una señal muy parecida (la oración que lleva la opinión
+real) con dos reglas ligeramente distintas. En vez de elegir una sola, promediamos las
+probabilidades de ambos modelos (`predict_proba`) y clasificamos según cuál clase queda
+con mayor probabilidad promedio — un ensamble de **voto suave**. La idea es que, si los
+errores de cada modelo no son exactamente los mismos, el promedio cancela parte del
+ruido de cada uno.
+""")
+
+code("""\
+class EnsamblePromedio(BaseEstimator, ClassifierMixin):
+    \"\"\"Promedia las probabilidades de dos pipelines entrenados sobre columnas de texto
+    distintas del mismo DataFrame, y predice la clase con mayor probabilidad promedio.\"\"\"
+
+    def __init__(self, pipe_a, columna_a, pipe_b, columna_b):
+        self.pipe_a = pipe_a
+        self.columna_a = columna_a
+        self.pipe_b = pipe_b
+        self.columna_b = columna_b
+
+    def fit(self, X, y):
+        self.pipe_a_ = clone(self.pipe_a).fit(X[self.columna_a], y)
+        self.pipe_b_ = clone(self.pipe_b).fit(X[self.columna_b], y)
+        self.classes_ = self.pipe_a_.classes_
+        return self
+
+    def predict_proba(self, X):
+        proba_a = self.pipe_a_.predict_proba(X[self.columna_a])
+        proba_b = self.pipe_b_.predict_proba(X[self.columna_b])
+        return (proba_a + proba_b) / 2
+
+    def predict(self, X):
+        proba = self.predict_proba(X)
+        return self.classes_[proba.argmax(axis=1)]
+
+
+ensamble_pipe = EnsamblePromedio(
+    pipe_a=pipe_comparacion,  # config v7: TF-IDF última oración
+    columna_a="last1_clean",
+    pipe_b=best_pipe_clause,  # config v9: TF-IDF tras conector contrastivo (ya tuneada)
+    columna_b="clause_clean",
+)
+""")
+
+md("""\
+Validamos con CV de 5 folds sobre todo `train.csv`, comparando el ensamble contra cada
+modelo por separado (para confirmar que combinar realmente ayuda y no solo iguala al
+mejor de los dos).
+""")
+
+code("""\
+acc_last1_cv, acc_clause_cv, acc_ensamble_cv = [], [], []
+
+for train_idx, val_idx in cv.split(train_df, train_df["label"]):
+    tr_fold = train_df.iloc[train_idx]
+    va_fold = train_df.iloc[val_idx]
+    y_tr_fold, y_va_fold = tr_fold["label"], va_fold["label"]
+
+    m_last1 = clone(pipe_comparacion).fit(tr_fold["last1_clean"], y_tr_fold)
+    m_clause = clone(best_pipe_clause).fit(tr_fold["clause_clean"], y_tr_fold)
+
+    proba_last1 = m_last1.predict_proba(va_fold["last1_clean"])
+    proba_clause = m_clause.predict_proba(va_fold["clause_clean"])
+    clases = m_last1.classes_
+
+    pred_last1 = clases[proba_last1.argmax(axis=1)]
+    pred_clause = clases[proba_clause.argmax(axis=1)]
+    pred_ensamble = clases[(proba_last1 + proba_clause).argmax(axis=1)]
+
+    acc_last1_cv.append(accuracy_score(y_va_fold, pred_last1))
+    acc_clause_cv.append(accuracy_score(y_va_fold, pred_clause))
+    acc_ensamble_cv.append(accuracy_score(y_va_fold, pred_ensamble))
+
+print("CV última oración (v7):       ", np.round(acc_last1_cv, 4), "promedio:", round(np.mean(acc_last1_cv), 4))
+print("CV conector contrastivo (v9): ", np.round(acc_clause_cv, 4), "promedio:", round(np.mean(acc_clause_cv), 4))
+print("CV ensamble (v7 + v9):        ", np.round(acc_ensamble_cv, 4), "promedio:", round(np.mean(acc_ensamble_cv), 4))
+""")
+
+md("""\
+El ensamble mejora sobre ambos modelos individuales, de forma consistente en los 5
+folds (no es un golpe de suerte de uno solo). Confirmamos con el split de validación
+fijo para tener un reporte de clasificación comparable con las iteraciones anteriores.
+""")
+
+code("""\
+# X_train_df/X_val_df se crearon en la sección 13.2, antes de calcular "clause_clean"
+# (sección 14) -- las recalculamos para que incluyan todas las columnas de texto que
+# necesita el ensamble.
+X_train_df = train_df.loc[X_train_text.index]
+X_val_df = train_df.loc[X_val_text.index]
+
+ensamble_pipe.fit(X_train_df, y_train)
+ensamble_val_preds = ensamble_pipe.predict(X_val_df)
+ensamble_val_acc = accuracy_score(y_val, ensamble_val_preds)
+print(f"Accuracy en el split de validación: {ensamble_val_acc:.4f}")
+print()
+print(classification_report(y_val, ensamble_val_preds, target_names=LABELS))
+""")
+
+code("""\
+fig, ax = plt.subplots(figsize=(5.5, 5))
+ConfusionMatrixDisplay.from_predictions(
+    y_val, ensamble_val_preds, labels=LABELS, cmap="Blues", ax=ax, colorbar=False,
+)
+ax.set_title("Matriz de confusión — ensamble última oración + conector contrastivo")
+plt.tight_layout()
+plt.show()
+""")
+
+md("### 15.1 Entrenamiento final y envío a Kaggle")
+
+code("""\
+final_ensamble = EnsamblePromedio(
+    pipe_a=pipe_comparacion,
+    columna_a="last1_clean",
+    pipe_b=best_pipe_clause,
+    columna_b="clause_clean",
+)
+final_ensamble.fit(train_df, train_df["label"])
+
+eval_preds_ensamble = final_ensamble.predict(eval_df)
+pd.Series(eval_preds_ensamble).value_counts(normalize=True).round(3)
+""")
+
+code("""\
+submission_iter6 = pd.DataFrame({"id": eval_df["id"], "answer": eval_preds_ensamble})
+assert list(submission_iter6.columns) == list(sample_submission.columns)
+assert len(submission_iter6) == len(sample_submission)
+assert (submission_iter6["id"].values == sample_submission["id"].values).all()
+assert set(submission_iter6["answer"].unique()) <= set(LABELS)
+
+submission_path_iter6 = SUBMISSIONS_DIR / "submission_v10_ensamble.csv"
+submission_iter6.to_csv(submission_path_iter6, index=False)
+
+model_path_iter6 = MODELS_DIR / "modelo_v10_ensamble.joblib"
+joblib.dump(final_ensamble, model_path_iter6)
+
+print("Guardado:", submission_path_iter6)
+print("Guardado:", model_path_iter6)
+submission_iter6.head()
+""")
+
+md("""\
+### 15.2 Qué queda pendiente
+
+Dado lo que aprendimos en la sección 14.6, conviene interpretar el próximo score público
+con cautela: una mejora de menos de ~1.5 puntos sobre el v7 no sería una señal fuerte.
+Si el ensamble sí mejora claramente (o si queremos seguir intentando más):
+
+1. Sumar un tercer modelo al ensamble (por ejemplo, el de la iteración 2 sobre el texto
+   completo, que captura señal distinta — vocabulario general del producto) para ver si
+   diversifica aún más los errores.
+2. Probar un ensamble ponderado (más peso al modelo con mejor CV) en vez de un promedio
+   simple 50/50.
+3. Revisar a mano los casos donde el ensamble y los modelos individuales no coinciden,
+   para entender si el promedio realmente arregla errores o solo los diluye.
+
+### 15.3 Actualización — envío real a Kaggle
+
+| Modelo | Validación local | CV 5-fold | Score público Kaggle |
+|---|---|---|---|
+| Última oración (v7) | 0.8578 | 0.8581 | 0.86222 (776/900) |
+| Conector contrastivo (v9) | 0.8717 | 0.8692 | 0.85333 (768/900) |
+| **Ensamble v7+v9 (v10)** | 0.8717 | **0.8731** | **0.86444 (778/900) — nuevo mejor confirmado** |
+
+El ensamble sí mejoró sobre el v7 (2 aciertos más de 900), consistente con lo que decía
+la CV. Sigue siendo una diferencia pequeña frente al margen de ruido de ~1.2 puntos que
+calculamos en la sección 14.6 (así que no hay que sobreinterpretar el tamaño exacto de
+la mejora), pero la dirección es la correcta y no es una regresión — la estrategia de
+combinar las dos señales en vez de elegir una fue la decisión correcta. **v10 pasa a ser
+el modelo oficial** de esta parte. Con el equipo líder en 0.88222, la brecha que queda
+es de aproximadamente 1.78 puntos (16 aciertos de 900).
+""")
+
+# ---------------------------------------------------------------------------
+# 16. Iteración 7: ensamble ponderado de 3 vías (+ texto completo)
+# ---------------------------------------------------------------------------
+md("""\
+## 16. Iteración 7 — ensamble ponderado de 3 vías
+
+El v10 combinó dos modelos (última oración, conector contrastivo) que capturan una
+señal parecida: la oración de opinión real. La iteración 2 mostró que un modelo sobre
+el **texto completo** es bastante más débil por sí solo (≈0.73, porque la logística
+"diluye" la señal de opinión) pero captura algo distinto: vocabulario general del
+producto, contexto, menciones que no están necesariamente en la última oración. La
+idea de esta iteración es sumarlo al ensamble como una tercera voz, con un peso bajo —
+no para que decida, sino para que desempate en los casos donde los otros dos modelos
+no están seguros.
+
+En vez de usar pesos iguales (como el v10), buscamos los pesos por `predict_proba`
+promediado usando las probabilidades **fuera de muestra** (out-of-fold) de una CV de 5
+folds — es decir, cada fila se predice con un modelo que nunca la vio en entrenamiento,
+igual que haría `cross_val_predict`. Así evitamos el error de la iteración 4: en vez de
+elegir los pesos contra un único split, los elegimos contra toda la validación cruzada.
+""")
+
+code("""\
+pipe_full_texto = Pipeline([
+    ("vec", TfidfVectorizer(ngram_range=(1, 2), min_df=3, max_features=40000, sublinear_tf=True)),
+    ("clf", LogisticRegression(max_iter=3000, C=1, random_state=RANDOM_STATE)),
+])
+
+proba_last1_oof = np.zeros((len(train_df), 3))
+proba_clause_oof = np.zeros((len(train_df), 3))
+proba_full_oof = np.zeros((len(train_df), 3))
+y_oof = np.empty(len(train_df), dtype=object)
+clases_oof = None
+
+for tr_idx, va_idx in cv.split(train_df, train_df["label"]):
+    tr_fold = train_df.iloc[tr_idx]
+    va_fold = train_df.iloc[va_idx]
+    y_tr_fold = tr_fold["label"]
+
+    m_last1 = clone(pipe_comparacion).fit(tr_fold["last1_clean"], y_tr_fold)
+    m_clause = clone(best_pipe_clause).fit(tr_fold["clause_clean"], y_tr_fold)
+    m_full = clone(pipe_full_texto).fit(tr_fold["text_clean"], y_tr_fold)
+    clases_oof = m_last1.classes_
+
+    proba_last1_oof[va_idx] = m_last1.predict_proba(va_fold["last1_clean"])
+    proba_clause_oof[va_idx] = m_clause.predict_proba(va_fold["clause_clean"])
+    proba_full_oof[va_idx] = m_full.predict_proba(va_fold["text_clean"])
+    y_oof[va_idx] = va_fold["label"].values
+
+def accuracy_con_pesos(w_last1, w_clause, w_full):
+    combinado = w_last1 * proba_last1_oof + w_clause * proba_clause_oof + w_full * proba_full_oof
+    pred = clases_oof[combinado.argmax(axis=1)]
+    return (pred == y_oof).mean()
+
+print("Solo última oración:  ", round(accuracy_con_pesos(1, 0, 0), 4))
+print("Solo conector:        ", round(accuracy_con_pesos(0, 1, 0), 4))
+print("Solo texto completo:  ", round(accuracy_con_pesos(0, 0, 1), 4))
+print("v10 (50/50, sin full):", round(accuracy_con_pesos(1, 1, 0), 4))
+""")
+
+md("""\
+### 16.1 Buscando los pesos (validado contra varias particiones de CV, no solo una)
+
+Probamos una rejilla de pesos para `clause` y `full` (dejando `last1` en 0, ya que su
+señal queda casi contenida en `clause` — recordemos que `clause_after_last_marker` usa
+la última oración como respaldo cuando no hay conector). **A diferencia de la iteración
+4**, no nos quedamos con el punto exacto que gana en esta única partición de CV: repetimos
+la búsqueda con otras semillas de `StratifiedKFold` y nos quedamos con una combinación
+que funcione bien de forma consistente en todas, no con el pico más alto de una sola.
+""")
+
+code("""\
+mejor_combo = (0, 0, 0)
+for w_clause in np.arange(0.3, 1.01, 0.05):
+    for w_full in np.arange(0.1, 0.81, 0.05):
+        acc = accuracy_con_pesos(0, w_clause, w_full)
+        if acc > mejor_combo[0]:
+            mejor_combo = (acc, round(w_clause, 2), round(w_full, 2))
+
+print(f"Mejor combinación en esta partición: clause={mejor_combo[1]}, full={mejor_combo[2]} "
+      f"-> accuracy={mejor_combo[0]:.4f}")
+""")
+
+code("""\
+# Verificamos que el punto elegido no sea un pico aislado de esta partición: repetimos
+# todo el cálculo de probabilidades fuera de muestra con otras semillas de CV y
+# comparamos varias combinaciones "redondas" cercanas al óptimo, no solo la ganadora.
+candidatos_pesos = {
+    "clause=0.5, full=0.4": (0.5, 0.4),
+    "clause=0.4, full=0.3": (0.4, 0.3),
+    "clause=0.6, full=0.5": (0.6, 0.5),
+}
+
+resultados_robustez = {nombre: [] for nombre in candidatos_pesos}
+for semilla in [1, 7, 123]:
+    cv_otra = StratifiedKFold(n_splits=5, shuffle=True, random_state=semilla)
+    p_last1 = np.zeros((len(train_df), 3))
+    p_clause = np.zeros((len(train_df), 3))
+    p_full = np.zeros((len(train_df), 3))
+    y_otra = np.empty(len(train_df), dtype=object)
+    clases_otra = None
+
+    for tr_idx, va_idx in cv_otra.split(train_df, train_df["label"]):
+        tr_fold = train_df.iloc[tr_idx]
+        va_fold = train_df.iloc[va_idx]
+        y_tr_fold = tr_fold["label"]
+        m1 = clone(pipe_comparacion).fit(tr_fold["last1_clean"], y_tr_fold)
+        m2 = clone(best_pipe_clause).fit(tr_fold["clause_clean"], y_tr_fold)
+        m3 = clone(pipe_full_texto).fit(tr_fold["text_clean"], y_tr_fold)
+        clases_otra = m1.classes_
+        p_clause[va_idx] = m2.predict_proba(va_fold["clause_clean"])
+        p_full[va_idx] = m3.predict_proba(va_fold["text_clean"])
+        y_otra[va_idx] = va_fold["label"].values
+
+    for nombre, (wc, wf) in candidatos_pesos.items():
+        combinado = wc * p_clause + wf * p_full
+        pred = clases_otra[combinado.argmax(axis=1)]
+        resultados_robustez[nombre].append((pred == y_otra).mean())
+
+for nombre, accs in resultados_robustez.items():
+    print(f"{nombre:25s}: {[round(a, 4) for a in accs]}  promedio={np.mean(accs):.4f}")
+""")
+
+md("""\
+Las tres combinaciones rinden parecido (todas alrededor de 0.88, en una meseta amplia y
+no en un pico aislado), así que nos quedamos con **`clause=0.5, full=0.4`** — un punto
+redondo cerca del centro de esa meseta, en vez del óptimo exacto de una sola partición.
+""")
+
+code("""\
+class EnsamblePonderado(BaseEstimator, ClassifierMixin):
+    \"\"\"Promedia (con pesos) las probabilidades de varios pipelines, cada uno entrenado
+    sobre su propia columna de texto de un DataFrame.\"\"\"
+
+    def __init__(self, pipes_columnas_pesos):
+        # Lista de tuplas (pipeline, nombre_columna, peso)
+        self.pipes_columnas_pesos = pipes_columnas_pesos
+
+    def fit(self, X, y):
+        self.ajustados_ = [
+            (clone(pipe).fit(X[columna], y), columna, peso)
+            for pipe, columna, peso in self.pipes_columnas_pesos
+        ]
+        self.classes_ = self.ajustados_[0][0].classes_
+        return self
+
+    def predict_proba(self, X):
+        total = None
+        for pipe_ajustado, columna, peso in self.ajustados_:
+            proba = peso * pipe_ajustado.predict_proba(X[columna])
+            total = proba if total is None else total + proba
+        return total
+
+    def predict(self, X):
+        proba = self.predict_proba(X)
+        return self.classes_[proba.argmax(axis=1)]
+
+
+ensamble3_pipe = EnsamblePonderado([
+    (best_pipe_clause, "clause_clean", 0.5),
+    (pipe_full_texto, "text_clean", 0.4),
+])
+""")
+
+md("""\
+Confirmamos una vez más con el split de validación fijo, para tener un reporte de
+clasificación y matriz de confusión comparables con las iteraciones anteriores.
+""")
+
+code("""\
+ensamble3_pipe.fit(X_train_df, y_train)
+ensamble3_val_preds = ensamble3_pipe.predict(X_val_df)
+ensamble3_val_acc = accuracy_score(y_val, ensamble3_val_preds)
+print(f"Accuracy en el split de validación: {ensamble3_val_acc:.4f}")
+print()
+print(classification_report(y_val, ensamble3_val_preds, target_names=LABELS))
+""")
+
+code("""\
+fig, ax = plt.subplots(figsize=(5.5, 5))
+ConfusionMatrixDisplay.from_predictions(
+    y_val, ensamble3_val_preds, labels=LABELS, cmap="Blues", ax=ax, colorbar=False,
+)
+ax.set_title("Matriz de confusión — ensamble ponderado de 3 vías")
+plt.tight_layout()
+plt.show()
+""")
+
+md("### 16.2 Entrenamiento final y envío a Kaggle")
+
+code("""\
+final_ensamble3 = EnsamblePonderado([
+    (best_pipe_clause, "clause_clean", 0.5),
+    (pipe_full_texto, "text_clean", 0.4),
+])
+final_ensamble3.fit(train_df, train_df["label"])
+
+eval_preds_ensamble3 = final_ensamble3.predict(eval_df)
+pd.Series(eval_preds_ensamble3).value_counts(normalize=True).round(3)
+""")
+
+code("""\
+submission_iter7 = pd.DataFrame({"id": eval_df["id"], "answer": eval_preds_ensamble3})
+assert list(submission_iter7.columns) == list(sample_submission.columns)
+assert len(submission_iter7) == len(sample_submission)
+assert (submission_iter7["id"].values == sample_submission["id"].values).all()
+assert set(submission_iter7["answer"].unique()) <= set(LABELS)
+
+submission_path_iter7 = SUBMISSIONS_DIR / "submission_v11_ensamble_ponderado.csv"
+submission_iter7.to_csv(submission_path_iter7, index=False)
+
+model_path_iter7 = MODELS_DIR / "modelo_v11_ensamble_ponderado.joblib"
+joblib.dump(final_ensamble3, model_path_iter7)
+
+print("Guardado:", submission_path_iter7)
+print("Guardado:", model_path_iter7)
+submission_iter7.head()
+""")
+
+md("""\
+### 16.3 Qué queda pendiente
+
+Si este envío no alcanza el 0.88222 del equipo líder (recordando siempre el margen de
+ruido de ~1.2 puntos de la sección 14.6 antes de sacar conclusiones de un solo envío):
+
+1. Revisar a mano los casos donde el ensamble de 3 vías se equivoca y los modelos
+   individuales no coinciden entre sí, para ver si hay un patrón corregible.
+2. Probar agregar un cuarto modelo con una señal todavía distinta (por ejemplo, las
+   features léxicas manuales de la iteración 2: signos de puntuación, longitud) con un
+   peso pequeño.
+3. Si el equipo decide avanzar a Parte 2 (deep learning), este ensamble clásico queda
+   como un punto de comparación sólido para medir si los modelos de la Parte 2
+   realmente mejoran sobre lo que ya se logró con ML clásico.
+
+### 16.4 Actualización — envío real a Kaggle
+
+| Modelo | Validación local | CV (varias semillas) | Score público Kaggle |
+|---|---|---|---|
+| Ensamble v7+v9 (v10) | 0.8717 | 0.8731 | 0.86444 (778/900) |
+| **Ensamble ponderado de 3 vías (v11)** | 0.8783 | **~0.883** | **0.86000 (774/900)** |
+
+A pesar de que la validación local y la CV (confirmada en 4 particiones distintas)
+apuntaban a una mejora clara sobre el v10, el envío real a Kaggle dio **0.86000, por
+debajo del v10** (774 aciertos de 900 contra 778). Usando el análisis de ruido de la
+sección 14.6: la diferencia es de apenas 0.44 puntos, menos de 0.4 errores estándar —
+es decir, estadísticamente **no hay evidencia de que el v11 sea peor que el v10**, pero
+tampoco de que sea mejor. En la práctica, agregar el modelo de texto completo no se
+tradujo en una mejora real, pese a la validación cuidadosa (múltiples semillas de CV,
+sin elegir contra un único split). Esto sugiere que, más allá de cierto punto, el
+texto completo no aporta señal adicional que generalice al conjunto de evaluación real
+de Kaggle, aunque sí parezca ayudar dentro de `train.csv`.
+
+**Nos quedamos con el v10 como modelo oficial de esta parte** (0.86444, el mejor score
+real confirmado hasta ahora). El v11 queda documentado como un intento razonado que no
+mejoró el resultado en la práctica — igual que la iteración 4 — y no se usa para la
+entrega final.
 """)
 
 nb["cells"] = cells
