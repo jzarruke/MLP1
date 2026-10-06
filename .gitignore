@@ -1,0 +1,12 @@
+# Probabilidades intermedias de validación cruzada
+results/comparacion_ensamble_*/*.npz
+
+# Archivos temporales de Jupyter
+.ipynb_checkpoints/
+
+# Caché de Python
+__pycache__/
+*.py[cod]
+
+# Archivos de macOS
+.DS_Store
