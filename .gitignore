@@ -10,3 +10,13 @@ __pycache__/
 
 # Archivos de macOS
 .DS_Store
+
+results/comparacion_identidad_*/*.npz
+
+results/mezcla_especialista_*/*.npz
+
+results/promedio_est_lr_*/*.npz
+
+results/svm_estructural_*/*.npz
+
+results/especialista_balanceado_*/*.npz
